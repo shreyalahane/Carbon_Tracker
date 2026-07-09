@@ -4,6 +4,7 @@ from kafka import KafkaProducer
 from dotenv import load_dotenv
 import os
 from datetime import datetime
+from apscheduler.schedulers.blocking import BlockingScheduler
 
 load_dotenv("myfile.env")
 
@@ -36,9 +37,20 @@ def fetch_carbon_intensity():
     producer.send('carbon_intensity_data', data)
     print("Carbon intensity data sent to Kafka")
 
+scheduler = BlockingScheduler()
+
+@scheduler.scheduled_job('cron', hour=6, minute=0)
+def scheduled_fetch():
+    fetch_weather()
+    fetch_air_quality()
+    fetch_carbon_intensity()
+    producer.flush()
+    print("Scheduled fetch complete")
+
 if __name__ == "__main__":
     fetch_weather()
     fetch_air_quality()
     fetch_carbon_intensity()
     producer.flush()
     print("All data sent successfully")
+    scheduler.start()
