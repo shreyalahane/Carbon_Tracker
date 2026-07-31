@@ -1,3 +1,7 @@
+"""This module fetches weather, air quality, and carbon intensity data
+from external APIs and publishes the responses to Kafka topics.
+It also schedules automatic data collection using APScheduler."""
+
 import requests
 import json
 from kafka import KafkaProducer
@@ -8,9 +12,12 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 
 load_dotenv("myfile.env")
 
+# Initialize the Kafka producer responsible for publishing API responses
+# to the configured Kafka topics using JSON serialization.
 producer = KafkaProducer(
     bootstrap_servers=os.getenv('KAFKA_BOOTSTRAP_SERVERS'),
-    value_serializer=lambda v: json.dumps(v).encode('utf-8')
+    value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+    api_version=(2, 5, 0)
 )
 
 def fetch_weather():
@@ -54,3 +61,5 @@ if __name__ == "__main__":
     producer.flush()
     print("All data sent successfully")
     scheduler.start()
+
+
