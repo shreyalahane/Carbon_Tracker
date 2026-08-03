@@ -5,12 +5,31 @@ os.environ['PATH'] = os.environ['PATH'] + ';C:\\hadoop\\bin'
 from pyspark.sql import SparkSession
 from dotenv import load_dotenv
 
-load_dotenv("/app/myfile.env")
+from pathlib import Path
+from dotenv import load_dotenv
+
+# -----------------------
+# Environment Detection
+# -----------------------
+if Path("/app").exists():
+    # Docker
+    load_dotenv("/app/myfile.env")
+    CHECKPOINT_DIR = "/tmp/checkpoint"
+else:
+    # Windows
+    load_dotenv("myfile.env")
+    CHECKPOINT_DIR = "checkpoint"
 
 spark = SparkSession.builder \
     .appName("CarbonTracker") \
-    .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.0,mysql:mysql-connector-java:8.0.33") \
-    .config("spark.sql.streaming.checkpointLocation", "/tmp/checkpoint") \
+    .config(
+        "spark.jars.packages",
+        "org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.0,mysql:mysql-connector-java:8.0.33"
+    ) \
+    .config(
+        "spark.sql.streaming.checkpointLocation",
+        CHECKPOINT_DIR
+    ) \
     .getOrCreate()
 
 spark.sparkContext.setLogLevel("ERROR")
@@ -27,7 +46,7 @@ def get_mysql_connection():
 
 def get_mongo_db():
     import pymongo
-    client = pymongo.MongoClient("mongodb://mongodb_carbon:27017")
+    client = pymongo.MongoClient(os.getenv("MONGO_URI"))
     return client, client[os.getenv('MONGO_DATABASE')]
 
 def log_quality_issue(table, field, issue, value, batch_id):
@@ -125,7 +144,9 @@ def date_exists(cursor, table, date_val):
 def process_weather():
     df = spark.readStream \
         .format("kafka") \
-        .option("kafka.bootstrap.servers", "kafka_carbon:9092") \
+        .option(
+    "kafka.bootstrap.servers",
+     "kafka_carbon:9092") \
         .option("subscribe", "weather_data") \
         .option("startingOffsets", "earliest") \
         .load()
@@ -233,7 +254,7 @@ def process_weather():
 
     weather_df.writeStream \
         .foreachBatch(save_weather) \
-        .option("checkpointLocation", "/tmp/checkpoint/weather") \
+        .option("checkpointLocation", f"{CHECKPOINT_DIR}/weather") \
         .start()
 
 # ── AIR QUALITY ──────────────────────────────────────────────────
@@ -241,7 +262,10 @@ def process_weather():
 def process_air_quality():
     df = spark.readStream \
         .format("kafka") \
-        .option("kafka.bootstrap.servers", "kafka_carbon:9092") \
+        .option(
+    "kafka.bootstrap.servers",
+    "kafka_carbon:9092"
+)\
         .option("subscribe", "air_quality_data") \
         .option("startingOffsets", "earliest") \
         .load()
@@ -352,7 +376,7 @@ def process_air_quality():
 
     air_df.writeStream \
         .foreachBatch(save_air_quality) \
-        .option("checkpointLocation", "/tmp/checkpoint/air") \
+        .option("checkpointLocation", f"{CHECKPOINT_DIR}/air") \
         .start()
 
 # ── CARBON INTENSITY ─────────────────────────────────────────────
@@ -360,7 +384,10 @@ def process_air_quality():
 def process_carbon_intensity():
     df = spark.readStream \
         .format("kafka") \
-        .option("kafka.bootstrap.servers", "kafka_carbon:9092") \
+        .option(
+    "kafka.bootstrap.servers",
+     "kafka_carbon:9092"
+) \
         .option("subscribe", "carbon_intensity_data") \
         .option("startingOffsets", "earliest") \
         .load()
@@ -450,7 +477,7 @@ def process_carbon_intensity():
 
     carbon_df.writeStream \
         .foreachBatch(save_carbon_intensity) \
-        .option("checkpointLocation", "/tmp/checkpoint/carbon") \
+        .option("checkpointLocation", f"{CHECKPOINT_DIR}/carbon") \
         .start()
 
 # ── MAIN ─────────────────────────────────────────────────────────

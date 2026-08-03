@@ -6,11 +6,19 @@ import requests
 import json
 from kafka import KafkaProducer
 from dotenv import load_dotenv
+from pathlib import Path
 import os
 from datetime import datetime
 from apscheduler.schedulers.blocking import BlockingScheduler
 
-load_dotenv("myfile.env")
+BASE_DIR = Path(__file__).resolve().parent.parent
+ENV_FILE = BASE_DIR / "myfile.env"
+
+load_dotenv(ENV_FILE)
+
+print("Loading:", ENV_FILE)
+print("KAFKA:", os.getenv("KAFKA_BOOTSTRAP_SERVERS"))
+print("MYSQL:", os.getenv("MYSQL_HOST"))
 
 # Initialize the Kafka producer responsible for publishing API responses
 # to the configured Kafka topics using JSON serialization.
