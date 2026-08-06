@@ -4,7 +4,7 @@ import pymysql
 import mlflow
 import mlflow.xgboost
 import xgboost as xgb
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.preprocessing import StandardScaler
 import shap
@@ -12,9 +12,13 @@ from dotenv import load_dotenv
 import os
 from datetime import datetime, timedelta
 import warnings
+from sklearn.model_selection import TimeSeriesSplit
 warnings.filterwarnings('ignore')
 
-load_dotenv("myfile.env")
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / "myfile.env")
 
 print("KAFKA:", os.getenv("KAFKA_BOOTSTRAP_SERVERS"))
 print("MYSQL:", os.getenv("MYSQL_HOST"))
@@ -47,13 +51,13 @@ def load_data():
     """, conn)
 
     carbon_df = pd.read_sql("""
-        SELECT DATE(fetched_at) as date,
-               AVG(carbon_intensity) as carbon_intensity,
-               AVG(fossil_fuel_percentage) as fossil_fuel_percentage
-        FROM carbon_intensity_data
-        GROUP BY DATE(fetched_at)
-        ORDER BY date
-    """, conn)
+    SELECT date,
+           AVG(carbon_intensity) AS carbon_intensity,
+           AVG(fossil_fuel_percentage) AS fossil_fuel_percentage
+    FROM carbon_intensity_data
+    GROUP BY date
+    ORDER BY date
+""", conn)
 
     conn.close()
 
@@ -170,118 +174,224 @@ def prepare_features(weather_df, air_df, carbon_df):
 
 def train_model(df):
 
-    # define features
+    # -----------------------------
+    # Feature Selection
+    # -----------------------------
     feature_cols = [
-        'temperature_mean', 'precipitation',
-        'wind_speed', 'solar_radiation',
-        'pm2_5', 'nitrogen_dioxide', 'carbon_monoxide',
-        'carbon_intensity', 'fossil_fuel_percentage',
-        'day_of_week', 'month', 'is_weekend',
-        'day_of_year', 'quarter',
-        'temp_7day_avg', 'co2_7day_avg', 'pm25_7day_avg',
-        'prev_day_co2', 'prev_day_temp', 'prev_day_pm25',
-        'temp_category', 'high_pollution',
-        'intensity_category', 'total_co2_kg'
+        'temperature_mean',
+        'precipitation',
+        'wind_speed',
+        'solar_radiation',
+        'pm2_5',
+        'nitrogen_dioxide',
+        'carbon_monoxide',
+        'carbon_intensity',
+        'fossil_fuel_percentage',
+        'day_of_week',
+        'month',
+        'is_weekend',
+        'day_of_year',
+        'quarter',
+        'temp_7day_avg',
+        'co2_7day_avg',
+        'pm25_7day_avg',
+        'prev_day_co2',
+        'prev_day_temp',
+        'prev_day_pm25',
+        'temp_category',
+        'high_pollution',
+        'intensity_category',
+        'total_co2_kg'
     ]
 
-    # keep only available columns
     feature_cols = [c for c in feature_cols if c in df.columns]
 
     X = df[feature_cols]
-    y = df['next_day_co2']
+    y = df["next_day_co2"]
 
     print(f"Features used: {feature_cols}")
     print(f"Training samples: {len(X)}")
 
-    # train test split
+    # -----------------------------
+    # Train/Test Split
+    # -----------------------------
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, shuffle=False)
+        X,
+        y,
+        test_size=0.20,
+        shuffle=False
+    )
 
     print(f"Train size: {len(X_train)}")
     print(f"Test size: {len(X_test)}")
 
-    # set MLflow tracking
-    mlflow.set_tracking_uri(os.getenv('MLFLOW_TRACKING_URI'))
+    # -----------------------------
+    # MLflow
+    # -----------------------------
+    mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI"))
     mlflow.set_experiment("carbon_footprint_prediction")
 
     with mlflow.start_run():
 
-        # XGBoost parameters
-        params = {
-            'n_estimators': 100,
-            'max_depth': 6,
-            'learning_rate': 0.1,
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
-            'min_child_weight': 1,
-            'gamma': 0,
-            'reg_alpha': 0.1,
-            'reg_lambda': 1.0,
-            'random_state': 42,
-            'n_jobs': -1
-        }
-
-        # train XGBoost model
-        model = xgb.XGBRegressor(**params)
-        model.fit(
-            X_train, y_train,
-            eval_set=[(X_test, y_test)],
-            verbose=False
+        # -----------------------------
+        # Base Model
+        # -----------------------------
+        base_model = xgb.XGBRegressor(
+            objective="reg:squarederror",
+            random_state=42,
+            n_jobs=-1
         )
 
-        # predictions
+        # -----------------------------
+        # Parameters to Search
+        # -----------------------------
+        param_grid = {
+    "n_estimators": [100, 200],
+    "max_depth": [3, 5],
+    "learning_rate": [0.05, 0.1],
+    "subsample": [0.8],
+    "colsample_bytree": [0.8]
+}
+        # -----------------------------
+        # Time Series Cross Validation
+        # -----------------------------
+        tscv = TimeSeriesSplit(n_splits=5)
+
+        # -----------------------------
+        # Grid Search
+        # -----------------------------
+        grid = GridSearchCV(
+
+            estimator=base_model,
+
+            param_grid=param_grid,
+
+            cv=tscv,
+
+            scoring="neg_mean_absolute_error",
+
+            n_jobs=-1,
+
+            verbose=2
+
+        )
+
+        grid.fit(X_train, y_train)
+
+        # -----------------------------
+        # Best Model
+        # -----------------------------
+        model = grid.best_estimator_
+
+        params = grid.best_params_
+
+        print("\nBest Parameters Found")
+        print(params)
+
+        # -----------------------------
+        # Final Training
+        # -----------------------------
+        model.fit(
+
+            X_train,
+
+            y_train,
+
+            eval_set=[(X_test, y_test)],
+
+            verbose=False
+
+        )
+
+        # -----------------------------
+        # Prediction
+        # -----------------------------
         y_pred = model.predict(X_test)
 
-        # metrics
+        # -----------------------------
+        # Metrics
+        # -----------------------------
         mae = mean_absolute_error(y_test, y_pred)
+
         rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+
         r2 = r2_score(y_test, y_pred)
 
-        print(f"\nModel Performance:")
-        print(f"MAE:  {mae:.2f} kg CO2")
-        print(f"RMSE: {rmse:.2f} kg CO2")
-        print(f"R2:   {r2:.4f} ({r2*100:.1f}%)")
+        print("\nModel Performance")
+        print(f"MAE  : {mae:.2f}")
+        print(f"RMSE : {rmse:.2f}")
+        print(f"R2   : {r2:.4f}")
 
-        # log to MLflow
+        # -----------------------------
+        # MLflow Logging
+        # -----------------------------
         mlflow.log_params(params)
-        mlflow.log_metric("mae", mae)
-        mlflow.log_metric("rmse", rmse)
-        mlflow.log_metric("r2", r2)
-        mlflow.log_metric("train_size", len(X_train))
-        mlflow.log_metric("test_size", len(X_test))
 
-        # log feature importance
-        importance = dict(zip(
-            feature_cols,
-            model.feature_importances_))
+        mlflow.log_metric("MAE", mae)
+
+        mlflow.log_metric("RMSE", rmse)
+
+        mlflow.log_metric("R2", r2)
+
+        mlflow.log_metric("Train_Size", len(X_train))
+
+        mlflow.log_metric("Test_Size", len(X_test))
+
+        # -----------------------------
+        # Feature Importance
+        # -----------------------------
+        importance = dict(
+            zip(feature_cols, model.feature_importances_)
+        )
+
         for feat, imp in importance.items():
-            mlflow.log_metric(f"importance_{feat}", imp)
+            mlflow.log_metric(f"importance_{feat}", float(imp))
 
-        # save model to MLflow
+        # -----------------------------
+        # Save Model
+        # -----------------------------
         mlflow.xgboost.log_model(
-            model, "carbon_model",
-            registered_model_name="CarbonFootprintPredictor")
+            model,
+            artifact_path="carbon_model",
+            registered_model_name="CarbonFootprintPredictor"
+        )
 
-        print(f"\nModel saved to MLflow")
+        print("\nModel Saved to MLflow")
 
-        # SHAP explainability
+        # -----------------------------
+        # SHAP Explainability
+        # -----------------------------
         explainer = shap.TreeExplainer(model)
+
         shap_values = explainer.shap_values(X_test)
 
-        # top 5 features by SHAP
         shap_importance = pd.DataFrame({
-            'feature': feature_cols,
-            'shap_importance': np.abs(shap_values).mean(axis=0)
-        }).sort_values('shap_importance', ascending=False)
 
-        print(f"\nTop 5 Features (SHAP):")
+            "feature": feature_cols,
+
+            "shap_importance": np.abs(shap_values).mean(axis=0)
+
+        }).sort_values(
+
+            by="shap_importance",
+
+            ascending=False
+
+        )
+
+        print("\nTop 5 SHAP Features")
+
         print(shap_importance.head())
 
-        # log SHAP values to MLflow
         for _, row in shap_importance.iterrows():
+
             mlflow.log_metric(
+
                 f"shap_{row['feature']}",
-                row['shap_importance'])
+
+                float(row["shap_importance"])
+
+            )
 
         return model, feature_cols, shap_importance
 

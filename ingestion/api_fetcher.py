@@ -70,4 +70,3 @@ if __name__ == "__main__":
     print("All data sent successfully")
     scheduler.start()
 
-
