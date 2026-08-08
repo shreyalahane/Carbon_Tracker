@@ -14,6 +14,11 @@ from datetime import datetime, timedelta
 import warnings
 from sklearn.model_selection import TimeSeriesSplit
 warnings.filterwarnings('ignore')
+# calculate total CO2 emissions
+# using emission factors
+ELECTRICITY_FACTOR = 0.233  # kg CO2 per kWh
+TRANSPORT_FACTOR = 2.31     # kg CO2 per liter petrol
+INDUSTRIAL_FACTOR = 0.5     # kg CO2 per unit
 
 from pathlib import Path
 
@@ -91,83 +96,166 @@ def prepare_features(weather_df, air_df, carbon_df):
 
     # ── FEATURE ENGINEERING ──────────────────────────────────────
 
-    # date based features
+# Date based features
     df['day_of_week'] = df['date'].dt.dayofweek
     df['month'] = df['date'].dt.month
     df['is_weekend'] = df['day_of_week'].apply(
-        lambda x: 1 if x >= 5 else 0)
+        lambda x: 1 if x >= 5 else 0
+)
     df['day_of_year'] = df['date'].dt.dayofyear
     df['quarter'] = df['date'].dt.quarter
 
-    # calculate total CO2 emissions
-    # using emission factors
-    ELECTRICITY_FACTOR = 0.233  # kg CO2 per kWh
-    TRANSPORT_FACTOR = 2.31     # kg CO2 per liter petrol
-    INDUSTRIAL_FACTOR = 0.5     # kg CO2 per unit
 
-    df['scope2_co2'] = (
-        df['carbon_intensity'] * 1000 * ELECTRICITY_FACTOR
-    )
+# ============================================================
+# CO2 CALCULATION
+# ============================================================
 
-    df['transport_co2'] = (
-        df['nitrogen_dioxide'] * 10 * TRANSPORT_FACTOR
-    )
+# Scope 2 CO2
+    df["scope2_co2"] = (
+        df["carbon_intensity"] * 1000 * ELECTRICITY_FACTOR
+)
 
-    df['industrial_co2'] = (
-        df['carbon_monoxide'] * INDUSTRIAL_FACTOR
-    )
+# Transport CO2
+    df["transport_co2"] = (
+    df["nitrogen_dioxide"] * 10 * TRANSPORT_FACTOR
+)
 
-    df['total_co2_kg'] = (
-        df['scope2_co2'] +
-        df['transport_co2'] +
-        df['industrial_co2']
-    )
+# Industrial CO2
+    df["industrial_co2"] = (
+    df["carbon_monoxide"] * INDUSTRIAL_FACTOR
+)
 
-    # rolling averages
-    df['temp_7day_avg'] = df['temperature_mean'].rolling(
-        window=7, min_periods=1).mean()
-    df['co2_7day_avg'] = df['total_co2_kg'].rolling(
-        window=7, min_periods=1).mean()
-    df['pm25_7day_avg'] = df['pm2_5'].rolling(
-        window=7, min_periods=1).mean()
+# Total CO2
+    df["total_co2_kg"] = (
+    df["scope2_co2"]
+    + df["transport_co2"]
+    + df["industrial_co2"]
+)
 
-    # lag features
-    df['prev_day_co2'] = df['total_co2_kg'].shift(1)
-    df['prev_day_temp'] = df['temperature_mean'].shift(1)
-    df['prev_day_pm25'] = df['pm2_5'].shift(1)
 
-    # temperature categories
-    df['temp_category'] = pd.cut(
-        df['temperature_mean'],
-        bins=[-50, 10, 20, 30, 60],
-        labels=[0, 1, 2, 3]
-    ).astype(float)
+# ============================================================
+# CO2 LAG FEATURES
+# ============================================================
 
-    # high pollution flag
-    df['high_pollution'] = (
-        (df['pm2_5'] > 50) | (df['nitrogen_dioxide'] > 40)
-    ).astype(int)
+    df["prev_day_co2"] = (
+    df["total_co2_kg"].shift(1)
+)
 
-    # carbon intensity category
-    df['intensity_category'] = pd.cut(
-        df['carbon_intensity'],
-        bins=[0, 100, 200, 300, 700],
-        labels=[0, 1, 2, 3]
-    ).astype(float)
+    df["prev_2_day_co2"] = (
+    df["total_co2_kg"].shift(2)
+)
 
-    # fill any remaining nulls
-    df = df.fillna(df.mean(numeric_only=True))
+    df["prev_3_day_co2"] = (
+    df["total_co2_kg"].shift(3)
+)
 
-    # target variable
-    # predict next day total CO2
-    df['next_day_co2'] = df['total_co2_kg'].shift(-1)
 
-    # drop last row (no target)
-    df = df.dropna(subset=['next_day_co2'])
+# ============================================================
+# ROLLING FEATURES
+# ============================================================
 
-    print(f"Final dataset rows after engineering: {len(df)}")
+    df["temp_14day_avg"] = (
+    df["temperature_mean"]
+    .rolling(14, min_periods=1)
+    .mean()
+)
+
+    df["carbon_14day_avg"] = (
+    df["carbon_intensity"]
+    .rolling(14, min_periods=1)
+    .mean()
+)
+
+    df["temp_7day_avg"] = (
+    df["temperature_mean"]
+    .rolling(7, min_periods=1)
+    .mean()
+)
+
+    df["pm25_7day_avg"] = (
+    df["pm2_5"]
+    .rolling(7, min_periods=1)
+    .mean()
+)
+
+
+# ============================================================
+# OTHER LAG FEATURES
+# ============================================================
+
+    df["prev_day_temp"] = (
+    df["temperature_mean"].shift(1)
+)
+
+    df["prev_day_pm25"] = (
+    df["pm2_5"].shift(1)
+)
+
+
+# ============================================================
+# TEMPERATURE CATEGORY
+# ============================================================
+
+    df["temp_category"] = pd.cut(
+    df["temperature_mean"],
+    bins=[-50, 10, 20, 30, 60],
+    labels=[0, 1, 2, 3]
+).astype(float)
+
+
+# ============================================================
+# HIGH POLLUTION FLAG
+# ============================================================
+
+    df["high_pollution"] = (
+    (df["pm2_5"] > 50) |
+    (df["nitrogen_dioxide"] > 40)
+).astype(int)
+
+
+# ============================================================
+# CARBON INTENSITY CATEGORY
+# ============================================================
+
+    df["intensity_category"] = pd.cut(
+    df["carbon_intensity"],
+    bins=[0, 100, 200, 300, 700],
+    labels=[0, 1, 2, 3]
+).astype(float)
+
+
+# ============================================================
+# FILL MISSING VALUES
+# ============================================================
+
+    df = df.fillna(
+    df.mean(numeric_only=True)
+)
+
+
+# ============================================================
+# TARGET
+# ============================================================
+
+# Tomorrow's carbon intensity
+    df["next_day_carbon_intensity"] = (
+    df["carbon_intensity"].shift(-1)
+)
+
+
+# ============================================================
+# REMOVE LAST ROW
+# ============================================================
+
+# Last row has no tomorrow's value
+    df = df.dropna(
+    subset=["next_day_carbon_intensity"]
+)
+
+
+    print(f"Final dataset rows after engineering: "f"{len(df)}")
+
     print(f"Columns: {list(df.columns)}")
-
     return df
 
 # ── TRAIN MODEL ──────────────────────────────────────────────────
@@ -178,36 +266,38 @@ def train_model(df):
     # Feature Selection
     # -----------------------------
     feature_cols = [
-        'temperature_mean',
-        'precipitation',
-        'wind_speed',
-        'solar_radiation',
-        'pm2_5',
-        'nitrogen_dioxide',
-        'carbon_monoxide',
-        'carbon_intensity',
-        'fossil_fuel_percentage',
-        'day_of_week',
-        'month',
-        'is_weekend',
-        'day_of_year',
-        'quarter',
-        'temp_7day_avg',
-        'co2_7day_avg',
-        'pm25_7day_avg',
-        'prev_day_co2',
-        'prev_day_temp',
-        'prev_day_pm25',
-        'temp_category',
-        'high_pollution',
-        'intensity_category',
-        'total_co2_kg'
-    ]
+    'temperature_mean',
+    'precipitation',
+    'wind_speed',
+    'solar_radiation',
+    'pm2_5',
+    'nitrogen_dioxide',
+    'carbon_monoxide',
+    'carbon_intensity',
+    'fossil_fuel_percentage',
+    'day_of_week',
+    'month',
+    'is_weekend',
+    'day_of_year',
+    'quarter',
+    'temp_7day_avg',
+    "prev_3_day_co2",
+    'pm25_7day_avg',
+    "prev_2_day_co2",
+    'prev_day_temp',
+    'prev_day_pm25',
+    'temp_category',
+    'high_pollution',
+    'intensity_category',
+    "temp_14day_avg",
+    "carbon_14day_avg",
+    "prev_day_co2"
+]
 
     feature_cols = [c for c in feature_cols if c in df.columns]
 
     X = df[feature_cols]
-    y = df["next_day_co2"]
+    y = df['next_day_carbon_intensity']
 
     print(f"Features used: {feature_cols}")
     print(f"Training samples: {len(X)}")
@@ -247,14 +337,16 @@ def train_model(df):
         # -----------------------------
         param_grid = {
     "n_estimators": [100, 200],
-    "max_depth": [3, 5],
-    "learning_rate": [0.05, 0.1],
-    "subsample": [0.8],
-    "colsample_bytree": [0.8]
+    "max_depth": [3, 4, 5],
+    "learning_rate": [0.03, 0.05, 0.1],
+    "subsample": [0.8, 1.0],
+    "colsample_bytree": [0.8, 1.0],
+    "min_child_weight": [1, 3]
 }
         # -----------------------------
         # Time Series Cross Validation
         # -----------------------------
+        
         tscv = TimeSeriesSplit(n_splits=5)
 
         # -----------------------------
@@ -282,26 +374,17 @@ def train_model(df):
         # Best Model
         # -----------------------------
         model = grid.best_estimator_
+        model.fit(
+                X_train,
+                y_train,
+                eval_set=[(X_test, y_test)],
+                verbose=False
+            )
 
         params = grid.best_params_
 
         print("\nBest Parameters Found")
         print(params)
-
-        # -----------------------------
-        # Final Training
-        # -----------------------------
-        model.fit(
-
-            X_train,
-
-            y_train,
-
-            eval_set=[(X_test, y_test)],
-
-            verbose=False
-
-        )
 
         # -----------------------------
         # Prediction
@@ -358,86 +441,76 @@ def train_model(df):
 
         print("\nModel Saved to MLflow")
 
-        # -----------------------------
+                # -----------------------------
         # SHAP Explainability
         # -----------------------------
-        explainer = shap.TreeExplainer(model)
+        try:
+            explainer = shap.TreeExplainer(model)
+            shap_values = explainer.shap_values(X_test)
 
-        shap_values = explainer.shap_values(X_test)
-
-        shap_importance = pd.DataFrame({
-
-            "feature": feature_cols,
-
-            "shap_importance": np.abs(shap_values).mean(axis=0)
-
-        }).sort_values(
-
-            by="shap_importance",
-
-            ascending=False
-
-        )
-
-        print("\nTop 5 SHAP Features")
-
-        print(shap_importance.head())
-
-        for _, row in shap_importance.iterrows():
-
-            mlflow.log_metric(
-
-                f"shap_{row['feature']}",
-
-                float(row["shap_importance"])
-
+            shap_importance = pd.DataFrame({
+                "feature": feature_cols,
+                "shap_importance": np.abs(shap_values).mean(axis=0)
+            }).sort_values(
+                by="shap_importance",
+                ascending=False
             )
 
+            print("\nTop 5 SHAP Features")
+            print(shap_importance.head())
+
+            for _, row in shap_importance.iterrows():
+                mlflow.log_metric(
+                    f"shap_{row['feature']}",
+                    float(row["shap_importance"])
+                )
+
+        except Exception as e:
+            print(f"SHAP error: {e}")
+
+            # Fallback if SHAP fails
+            shap_importance = pd.DataFrame({
+                "feature": feature_cols,
+                "shap_importance": model.feature_importances_
+            }).sort_values(
+                by="shap_importance",
+                ascending=False
+            )
+
+            print("\nTop 5 Features (XGBoost importance)")
+            print(shap_importance.head())
+
+        # IMPORTANT:
+        # Return values regardless of whether SHAP succeeds or fails
         return model, feature_cols, shap_importance
 
 # ── GENERATE PREDICTIONS ─────────────────────────────────────────
 
 def generate_predictions(model, feature_cols, df):
 
-    # use latest row to predict tomorrow
-    latest = df[feature_cols].iloc[-1:].copy()
+    # Get the latest day's features
+    latest = df[feature_cols].iloc[-1:]
+
+    # Predict tomorrow's carbon intensity
     prediction = model.predict(latest)[0]
 
-    # risk level
-    if prediction < 500:
-        risk = 'LOW'
-    elif prediction < 1000:
-        risk = 'MEDIUM'
+    # Determine risk level
+    if prediction <= 100:
+        risk = "VERY LOW"
+    elif prediction <= 200:
+        risk = "LOW"
+    elif prediction <= 300:
+        risk = "MODERATE"
+    elif prediction <= 400:
+        risk = "HIGH"
     else:
-        risk = 'HIGH'
+        risk = "VERY HIGH"
 
-    tomorrow = (datetime.now() + timedelta(days=1)).date()
-
-    print(f"\nTomorrow's Prediction:")
-    print(f"Date: {tomorrow}")
-    print(f"Predicted CO2: {prediction:.2f} kg")
+    print("\nTomorrow's Prediction:")
+    print(f"Predicted Carbon Intensity: {prediction:.2f}")
     print(f"Risk Level: {risk}")
 
-    # save prediction to MySQL
-    conn = get_mysql_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        INSERT INTO predictions
-        (date, predicted_co2_kg, confidence, risk_level, created_at)
-        VALUES (%s, %s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE
-        predicted_co2_kg = VALUES(predicted_co2_kg),
-        risk_level = VALUES(risk_level),
-        created_at = VALUES(created_at)
-    """, (tomorrow, round(float(prediction), 2),
-          0.85, risk, datetime.now()))
-
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-    print(f"Prediction saved to MySQL")
+    # Return values to main()
     return prediction, risk
 
 # ── SAVE EMISSIONS TO MYSQL ──────────────────────────────────────

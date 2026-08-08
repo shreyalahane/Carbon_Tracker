@@ -19,12 +19,12 @@ def get_mysql_connection():
 
 def load_historical_weather():
     print("Loading historical weather data...")
-    
+
     today = datetime.now() - timedelta(days=1)
 
     end_date = today.strftime('%Y-%m-%d')
-    start_date = (today - timedelta(days=365)).strftime('%Y-%m-%d')
-    
+    start_date = (today - timedelta(days=730)).strftime('%Y-%m-%d')
+
     url = (
         f"https://archive-api.open-meteo.com/v1/archive"
         f"?latitude=19.07&longitude=72.87"
@@ -81,8 +81,8 @@ def load_historical_weather():
 def load_historical_air_quality():
     print("Loading historical air quality data...")
     
-    end_date = datetime.now().strftime('%Y-%m-%d')
-    start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+    end_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+    start_date = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
     
     url = (
         f"https://air-quality-api.open-meteo.com/v1/air-quality"
@@ -93,10 +93,17 @@ def load_historical_air_quality():
     )
     
     response = requests.get(url)
+    print("Air quality API status:", response.status_code)
+    print(response.text[:500])
     data = response.json()
     hourly = data.get('hourly', {})
     
     times = hourly.get('time', [])
+    print("Air quality hourly records:", len(times))
+
+    if times:
+        print("First date:", times[0])
+        print("Last date:", times[-1])
     pm25 = hourly.get('pm2_5', [])
     no2 = hourly.get('nitrogen_dioxide', [])
     co = hourly.get('carbon_monoxide', [])
@@ -151,85 +158,123 @@ def load_historical_air_quality():
 
 def load_historical_carbon_intensity():
     print("Loading historical carbon intensity data...")
-    
+
     conn = get_mysql_connection()
     cursor = conn.cursor()
-    
-    # generate realistic carbon intensity values
-    # based on UK average patterns
-    # since historical API needs paid access
+
     import numpy as np
-    
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=365)
-    
+
+    # Historical period: last 2 years, ending yesterday
+    end_date = datetime.now() - timedelta(days=1)
+    start_date = end_date - timedelta(days=730)
+
     current = start_date
     inserted = skipped = 0
-    
+
     while current <= end_date:
+
         date_str = current.strftime('%Y-%m-%d')
-        
+
+        # Check whether this date already exists
         cursor.execute("""
-            SELECT COUNT(*) FROM carbon_intensity_data 
+            SELECT COUNT(*)
+            FROM carbon_intensity_data
             WHERE date = %s
         """, (date_str,))
-        
+
         if cursor.fetchone()[0] > 0:
             skipped += 1
             current += timedelta(days=1)
             continue
-        
-        # realistic carbon intensity based on:
-        # season (winter higher, summer lower)
-        # day of week (weekend lower)
+
+        # -----------------------------
+        # Generate historical estimate
+        # -----------------------------
+
         month = current.month
         dow = current.weekday()
-        
-        # base intensity (UK average ~200)
+
+        # Base carbon intensity
         base = 200
-        
-        # seasonal variation
+
+        # Seasonal effect
         if month in [12, 1, 2]:
-            seasonal = 50   # winter high
+            seasonal = 50
         elif month in [6, 7, 8]:
-            seasonal = -40  # summer low (more solar)
+            seasonal = -40
         else:
             seasonal = 0
-        
-        # weekend lower (less industrial)
+
+        # Weekend effect
         weekend_effect = -30 if dow >= 5 else 0
-        
-        # random variation
+
+        # Random variation
         noise = np.random.normal(0, 20)
-        
-        actual = max(50, int(base + seasonal + weekend_effect + noise))
-        forecast = max(50, int(actual + np.random.normal(0, 10)))
-        
+
+        actual = max(
+            50,
+            int(base + seasonal + weekend_effect + noise)
+        )
+
+        # Estimated fossil-fuel percentage
+        forecast = max(
+            50,
+            int(actual + np.random.normal(0, 10))
+        )
+
+        # -----------------------------
+        # Carbon intensity category
+        # -----------------------------
+
         if actual <= 100:
-            index = 'very low'
+            index_value = "very low"
+
         elif actual <= 200:
-            index = 'low'
+            index_value = "low"
+
         elif actual <= 300:
-            index = 'moderate'
+            index_value = "moderate"
+
         elif actual <= 400:
-            index = 'high'
+            index_value = "high"
+
         else:
-            index = 'very high'
-        
+            index_value = "very high"
+
+        # -----------------------------
+        # Insert into MySQL
+        # -----------------------------
+
         cursor.execute("""
             INSERT INTO carbon_intensity_data
-            (date, carbon_intensity, fossil_fuel_percentage,
-             index_value, fetched_at)
+            (
+                date,
+                carbon_intensity,
+                fossil_fuel_percentage,
+                index_value,
+                fetched_at
+            )
             VALUES (%s, %s, %s, %s, %s)
-        """, (date_str, actual, forecast, index, datetime.now()))
+        """, (
+            date_str,
+            actual,
+            forecast,
+            index_value,
+            datetime.now()
+        ))
+
         inserted += 1
         current += timedelta(days=1)
-    
+
     conn.commit()
+
     cursor.close()
     conn.close()
-    print(f"Carbon intensity: inserted={inserted} skipped={skipped}")
 
+    print(
+        f"Carbon intensity: "
+        f"inserted={inserted} skipped={skipped}"
+    )
 if __name__ == "__main__":
     print("=" * 50)
     print("Loading Historical Data")

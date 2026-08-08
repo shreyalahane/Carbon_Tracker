@@ -1,7 +1,9 @@
 venv/
+.venv/
 __pycache__/
 *.pyc
 .env
+myfile.env
 *.log
 mlruns/
 *.db
