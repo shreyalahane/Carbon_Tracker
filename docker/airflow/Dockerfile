@@ -1,5 +1,13 @@
 FROM apache/airflow:2.7.0
 
+# The nightly DAG runs the Spark batch job via `docker exec pyspark_carbon`,
+# which needs the Docker CLI plus the mounted docker socket.
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends docker.io \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 USER airflow
 
 RUN pip install --no-cache-dir \

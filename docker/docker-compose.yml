@@ -1,3 +1,16 @@
+# Carbon Tracker stack.
+#
+# Design: one env file (../myfile.env, gitignored) holds all credentials and
+# localhost defaults for tools run on the host. Each service here re-injects
+# it with env_file: and then overrides only the host names that must point at
+# other containers (mysql_carbon, mongodb_carbon, kafka_carbon, mlflow_carbon).
+# Because docker-compose "environment:" always wins over "env_file:", the
+# containers reach services by name while native scripts keep working with
+# localhost. No hard-coded IPs or "am I in Docker" checks anywhere.
+#
+# Start everything:  docker compose up -d
+# Deployment: copy docker/.env.example to docker/.env and change the values.
+
 networks:
   carbon_network:
     driver: bridge
@@ -5,6 +18,7 @@ networks:
 volumes:
   mongo_data:
   postgres_data:
+  mysql_data:
 
 services:
 
@@ -46,6 +60,26 @@ services:
     volumes:
       - mongo_data:/data/db
 
+  mysql:
+    image: mysql:8.0
+    container_name: mysql_carbon
+    networks:
+      - carbon_network
+    environment:
+      # Secret comes from docker/.env (gitignored).
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD must be set in docker/.env}
+      MYSQL_DATABASE: carbon_db
+    ports:
+      - "${MYSQL_HOST_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.9.0
     container_name: mlflow_carbon
@@ -56,14 +90,22 @@ services:
     command: mlflow server --host 0.0.0.0
 
   pyspark:
-    image: jupyter/pyspark-notebook:spark-3.5.0
+    build:
+      context: .
+      dockerfile: pyspark/Dockerfile
     container_name: pyspark_carbon
     networks:
       - carbon_network
     user: root
+    env_file:
+      - ../myfile.env
+    environment:
+      MYSQL_HOST: mysql_carbon
+      MYSQL_PORT: 3306
+      MONGO_URI: mongodb://mongodb_carbon:27017
+      KAFKA_BOOTSTRAP_SERVERS: kafka_carbon:9092
     volumes:
       - ../processing:/app/processing
-      - ../myfile.env:/app/myfile.env
     ports:
       - "8080:8080"
     depends_on:
@@ -97,9 +139,6 @@ services:
       AIRFLOW__CORE__FERNET_KEY: ''
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-    volumes:
-      - ../airflow/dags:/opt/airflow/dags
-      - ../myfile.env:/opt/airflow/myfile.env
     entrypoint: /bin/bash
     command: -c "airflow db init && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com"
 
@@ -113,18 +152,25 @@ services:
     depends_on:
       - postgres
       - airflow-init
+    env_file:
+      - ../myfile.env
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres_airflow/airflow
       AIRFLOW__CORE__FERNET_KEY: ''
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      MYSQL_HOST: mysql_carbon
+      MYSQL_PORT: 3306
+      MONGO_URI: mongodb://mongodb_carbon:27017
+      MONGO_DATABASE: carbon_tracker
+      KAFKA_BOOTSTRAP_SERVERS: kafka_carbon:9092
+      MLFLOW_TRACKING_URI: http://mlflow_carbon:5000
     volumes:
       - ../airflow/dags:/opt/airflow/dags
       - ../ingestion:/opt/airflow/ingestion
       - ../ml:/opt/airflow/ml
       - ../processing:/opt/airflow/processing
-      - ../myfile.env:/opt/airflow/myfile.env
       - /var/run/docker.sock:/var/run/docker.sock
     command: scheduler
     restart: always
@@ -139,20 +185,67 @@ services:
     depends_on:
       - postgres
       - airflow-init
+    env_file:
+      - ../myfile.env
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres_airflow/airflow
       AIRFLOW__CORE__FERNET_KEY: ''
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      MYSQL_HOST: mysql_carbon
+      MYSQL_PORT: 3306
+      MONGO_URI: mongodb://mongodb_carbon:27017
+      MONGO_DATABASE: carbon_tracker
+      KAFKA_BOOTSTRAP_SERVERS: kafka_carbon:9092
+      MLFLOW_TRACKING_URI: http://mlflow_carbon:5000
     volumes:
       - ../airflow/dags:/opt/airflow/dags
       - ../ingestion:/opt/airflow/ingestion
       - ../ml:/opt/airflow/ml
       - ../processing:/opt/airflow/processing
-      - ../myfile.env:/opt/airflow/myfile.env
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8090:8080"
     command: webserver
     restart: always
+
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/backend/Dockerfile
+    container_name: backend_carbon
+    networks:
+      - carbon_network
+    env_file:
+      - ../myfile.env
+    environment:
+      MYSQL_HOST: mysql_carbon
+      MYSQL_PORT: 3306
+      MONGO_URI: mongodb://mongodb_carbon:27017
+      MONGO_DATABASE: carbon_tracker
+      MLFLOW_TRACKING_URI: http://mlflow_carbon:5000
+    volumes:
+      - ../reports:/app/reports
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mysql
+      - mongodb
+      - mlflow
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/frontend/Dockerfile
+    container_name: frontend_carbon
+    networks:
+      - carbon_network
+    env_file:
+      - ../myfile.env
+    environment:
+      STREAMLIT_API_URL: http://backend:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend
