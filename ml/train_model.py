@@ -260,7 +260,7 @@ def prepare_features(weather_df, air_df, carbon_df):
 
 # ── TRAIN MODEL ──────────────────────────────────────────────────
 
-def train_model(df):
+def train_model(df, tune=True):
 
     # -----------------------------
     # Feature Selection
@@ -333,58 +333,62 @@ def train_model(df):
         )
 
         # -----------------------------
-        # Parameters to Search
+        # Model Selection
+        # tune=True  -> full GridSearchCV with time-series CV
+        # tune=False -> fixed params (nightly retrain, fast)
         # -----------------------------
-        param_grid = {
-    "n_estimators": [100, 200],
-    "max_depth": [3, 4, 5],
-    "learning_rate": [0.03, 0.05, 0.1],
-    "subsample": [0.8, 1.0],
-    "colsample_bytree": [0.8, 1.0],
-    "min_child_weight": [1, 3]
-}
-        # -----------------------------
-        # Time Series Cross Validation
-        # -----------------------------
-        
-        tscv = TimeSeriesSplit(n_splits=5)
+        if tune:
+            param_grid = {
+        "n_estimators": [100, 200],
+        "max_depth": [3, 4, 5],
+        "learning_rate": [0.03, 0.05, 0.1],
+        "subsample": [0.8, 1.0],
+        "colsample_bytree": [0.8, 1.0],
+        "min_child_weight": [1, 3]
+    }
+            tscv = TimeSeriesSplit(n_splits=5)
 
-        # -----------------------------
-        # Grid Search
-        # -----------------------------
-        grid = GridSearchCV(
+            grid = GridSearchCV(
+                estimator=base_model,
+                param_grid=param_grid,
+                cv=tscv,
+                scoring="neg_mean_absolute_error",
+                n_jobs=-1,
+                verbose=2
+            )
 
-            estimator=base_model,
+            grid.fit(X_train, y_train)
 
-            param_grid=param_grid,
+            model = grid.best_estimator_
+            params = grid.best_params_
 
-            cv=tscv,
+            print("\nBest Parameters Found")
+            print(params)
+        else:
+            params = {
+                "n_estimators": 200,
+                "max_depth": 4,
+                "learning_rate": 0.05,
+                "subsample": 0.8,
+                "colsample_bytree": 0.8,
+                "min_child_weight": 1,
+            }
+            model = xgb.XGBRegressor(
+                objective="reg:squarederror",
+                random_state=42,
+                n_jobs=-1,
+                **params
+            )
 
-            scoring="neg_mean_absolute_error",
+            print("\nUsing fixed nightly parameters")
+            print(params)
 
-            n_jobs=-1,
-
-            verbose=2
-
-        )
-
-        grid.fit(X_train, y_train)
-
-        # -----------------------------
-        # Best Model
-        # -----------------------------
-        model = grid.best_estimator_
         model.fit(
                 X_train,
                 y_train,
                 eval_set=[(X_test, y_test)],
                 verbose=False
             )
-
-        params = grid.best_params_
-
-        print("\nBest Parameters Found")
-        print(params)
 
         # -----------------------------
         # Prediction
@@ -549,6 +553,53 @@ def save_emissions(df):
     cursor.close()
     conn.close()
     print(f"Emissions table updated: {len(df)} rows")
+
+# ── SAVE PREDICTION TO MYSQL ────────────────────────────────────
+
+def save_prediction(prediction, risk, confidence=0.85):
+    conn = get_mysql_connection()
+    cursor = conn.cursor()
+    tomorrow = (datetime.now() + timedelta(days=1)).date()
+
+    cursor.execute("""
+        INSERT INTO predictions
+        (date, predicted_co2_kg, confidence, risk_level, created_at)
+        VALUES (%s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+        predicted_co2_kg=VALUES(predicted_co2_kg),
+        confidence=VALUES(confidence),
+        risk_level=VALUES(risk_level),
+        created_at=VALUES(created_at)
+    """, (tomorrow, round(float(prediction), 2),
+          confidence, risk, datetime.now()))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+    print(f"Prediction saved: {prediction:.2f} Risk: {risk}")
+
+# ── NIGHTLY RETRAIN (called by Airflow DAG) ─────────────────────
+
+def nightly_retrain():
+    print("\nNightly retrain started")
+
+    weather_df, air_df, carbon_df = load_data()
+
+    df = prepare_features(weather_df, air_df, carbon_df)
+
+    if df is None:
+        print("Not enough data to retrain")
+        return
+
+    save_emissions(df)
+
+    model, feature_cols, shap_importance = train_model(df, tune=False)
+
+    prediction, risk = generate_predictions(model, feature_cols, df)
+
+    save_prediction(prediction, risk)
+
+    print("\nNightly retrain complete")
 
 # ── MAIN ─────────────────────────────────────────────────────────
 
