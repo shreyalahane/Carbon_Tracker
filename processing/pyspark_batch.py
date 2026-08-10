@@ -6,8 +6,10 @@ IGNORE so re-running is idempotent.
 """
 
 import os
-os.environ['HADOOP_HOME'] = 'C:\\hadoop'
-os.environ['PATH'] = os.environ['PATH'] + ';C:\\hadoop\\bin'
+
+if os.name == "nt":
+    os.environ["HADOOP_HOME"] = "C:\\hadoop"
+    os.environ["PATH"] += ";C:\\hadoop\\bin"
 
 import json
 from pathlib import Path
@@ -20,18 +22,10 @@ from quality import (
     process_carbon_intensity_message,
 )
 
-# -----------------------
-# Environment Detection
-# -----------------------
-if Path("/app").exists():
-    # Docker
-    load_dotenv("/app/myfile.env")
-    KAFKA_BOOTSTRAP = "kafka_carbon:9092"
-else:
-    # Windows
-    load_dotenv("myfile.env")
-    KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS",
-                                "localhost:29092")
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / "myfile.env")
+
+KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka_carbon:9092")
 
 spark = SparkSession.builder \
     .appName("CarbonTrackerBatch") \

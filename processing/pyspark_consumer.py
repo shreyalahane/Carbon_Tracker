@@ -1,10 +1,12 @@
 import os
-os.environ['HADOOP_HOME'] = 'C:\\hadoop'
-os.environ['PATH'] = os.environ['PATH'] + ';C:\\hadoop\\bin'
 
-from pyspark.sql import SparkSession
-from dotenv import load_dotenv
+if os.name == "nt":
+    os.environ["HADOOP_HOME"] = "C:\\hadoop"
+    os.environ["PATH"] += ";C:\\hadoop\\bin"
+
 from pathlib import Path
+from dotenv import load_dotenv
+from pyspark.sql import SparkSession
 
 from quality import (
     process_weather_message,
@@ -12,17 +14,12 @@ from quality import (
     process_carbon_intensity_message,
 )
 
-# -----------------------
-# Environment Detection
-# -----------------------
-if Path("/app").exists():
-    # Docker
-    load_dotenv("/app/myfile.env")
-    CHECKPOINT_DIR = "/tmp/checkpoint"
-else:
-    # Windows
-    load_dotenv("myfile.env")
-    CHECKPOINT_DIR = "checkpoint"
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / "myfile.env")
+
+KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka_carbon:9092")
+DEFAULT_CHECKPOINT = "checkpoint" if os.name == "nt" else "/tmp/checkpoint"
+CHECKPOINT_DIR = os.getenv("SPARK_CHECKPOINT_DIR", DEFAULT_CHECKPOINT)
 
 spark = SparkSession.builder \
     .appName("CarbonTracker") \
@@ -44,9 +41,7 @@ print("Spark session created successfully")
 def process_weather():
     df = spark.readStream \
         .format("kafka") \
-        .option(
-    "kafka.bootstrap.servers",
-     "kafka_carbon:9092") \
+        .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP) \
         .option("subscribe", "weather_data") \
         .option("startingOffsets", "earliest") \
         .load()
@@ -69,10 +64,7 @@ def process_weather():
 def process_air_quality():
     df = spark.readStream \
         .format("kafka") \
-        .option(
-    "kafka.bootstrap.servers",
-    "kafka_carbon:9092"
-)\
+        .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP) \
         .option("subscribe", "air_quality_data") \
         .option("startingOffsets", "earliest") \
         .load()
@@ -95,10 +87,7 @@ def process_air_quality():
 def process_carbon_intensity():
     df = spark.readStream \
         .format("kafka") \
-        .option(
-    "kafka.bootstrap.servers",
-     "kafka_carbon:9092"
-) \
+        .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP) \
         .option("subscribe", "carbon_intensity_data") \
         .option("startingOffsets", "earliest") \
         .load()

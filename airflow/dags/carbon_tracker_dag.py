@@ -38,7 +38,8 @@ def fetch_data():
     from datetime import datetime
 
     producer = KafkaProducer(
-        bootstrap_servers='kafka_carbon:9092',
+        bootstrap_servers=os.getenv('KAFKA_BOOTSTRAP_SERVERS',
+                                    'kafka_carbon:9092'),
         value_serializer=lambda v: json.dumps(v).encode('utf-8'),
         api_version=(2, 5, 0)
     )
@@ -67,7 +68,8 @@ def fetch_data():
 def retrain_model():
     import sys
     sys.path.insert(0, '/opt/airflow')
-    os.environ['MLFLOW_TRACKING_URI'] = 'http://mlflow_carbon:5000'
+    os.environ['MLFLOW_TRACKING_URI'] = os.getenv(
+        'MLFLOW_TRACKING_URI', 'http://mlflow_carbon:5000')
     from ml.train_model import nightly_retrain
     nightly_retrain()
 
@@ -109,7 +111,8 @@ def cleanup_old_data():
 def log_pipeline_status():
     import pymongo
     from datetime import datetime
-    client = pymongo.MongoClient("mongodb://mongodb_carbon:27017")
+    client = pymongo.MongoClient(
+        os.getenv('MONGO_URI', 'mongodb://mongodb_carbon:27017'))
     db = client['carbon_tracker']
     db.pipeline_logs.insert_one({
         "run_date": datetime.now(),
@@ -126,14 +129,17 @@ task_fetch = PythonOperator(
     dag=dag
 )
 
+# The nightly pipeline runs the Spark batch job inside the pyspark_carbon
+# container. Override SPARK_RUN_COMMAND for other environments (e.g. a
+# spark-submit or a different container name).
+SPARK_RUN_COMMAND = os.getenv(
+    "SPARK_RUN_COMMAND",
+    "docker exec pyspark_carbon python /app/processing/pyspark_batch.py",
+)
+
 task_process = BashOperator(
     task_id='process_data',
-    bash_command="""
-        docker exec pyspark_carbon bash -c \
-        "pip install -q kafka-python pymysql pymongo python-dotenv requests \
-        && PYTHONPATH=/usr/local/spark-3.5.0-bin-hadoop3/python:/usr/local/spark-3.5.0-bin-hadoop3/python/lib/py4j-0.10.9.7-src.zip \
-        python /app/processing/pyspark_batch.py" || true
-    """,
+    bash_command=SPARK_RUN_COMMAND,
     dag=dag
 )
 

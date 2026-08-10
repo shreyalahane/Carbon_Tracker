@@ -8,19 +8,19 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-if Path("/app").exists():
-    load_dotenv("/app/myfile.env")
-else:
-    load_dotenv("myfile.env")
+# Local defaults (localhost). When running inside docker-compose the
+# service environment overrides these, so the same file works everywhere.
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / "myfile.env")
 
 
 def get_mysql_connection():
     import pymysql
     return pymysql.connect(
-        host=os.getenv('MYSQL_HOST'),
-        user=os.getenv('MYSQL_USER'),
-        password=os.getenv('MYSQL_PASSWORD'),
-        database=os.getenv('MYSQL_DATABASE')
+        host=os.getenv("MYSQL_HOST", "localhost"),
+        user=os.getenv("MYSQL_USER"),
+        password=os.getenv("MYSQL_PASSWORD"),
+        database=os.getenv("MYSQL_DATABASE"),
     )
 
 
